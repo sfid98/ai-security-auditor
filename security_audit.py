@@ -10,20 +10,16 @@ URI = os.getenv("NEO4J_URI", "bolt://localhost:7687")
 AUTH = (os.getenv("NEO4J_USERNAME", "neo4j"), os.getenv("NEO4J_PASSWORD", "password_segreta"))
 ollama_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 
-# 1. Definizione dei "Sink" (Concetti pericolosi da cercare)
 RISKY_TOPICS = [
-    "SQL execution database query raw sql",  # SQL Injection
-    "subprocess system call os.system exec eval", # Command Injection
-    "password secret key token credential hardcoded", # Hardcoded Secrets
-    "flask request args form input", # Unsanitized Input handling
+    "constructing raw SQL queries with string concatenation", 
+    "executing system commands with os.system or subprocess",  
+    "opening files with dynamic paths without validation",     
+    "hardcoded API keys passwords and secrets"                 
 ]
 
-# 2. Configurazione LLM e Vector Store (Locale)
 embeddings = OllamaEmbeddings(model="nomic-embed-text", base_url=ollama_url)
 llm = ChatOllama(model="mistral", temperature=0, base_url=ollama_url)
 
-# Query GraphRAG specializzata per la sicurezza
-# Cerca chi chiama la funzione vulnerabile per capire se è esposta
 security_retrieval_query = """
 RETURN
     "Function Name: " + node.name + "\\n" +
@@ -48,30 +44,29 @@ vector_store = Neo4jVector.from_existing_graph(
     retrieval_query=security_retrieval_query
 )
 
-# 3. Il Prompt "Security Engineer"
 security_template = """
-Sei un esperto Cyber Security Auditor. Analizza il seguente frammento di codice Python e il suo contesto di chiamata (Callers).
+You are a Senior Security Engineer reviewing code.
+Analyze the provided Python code snippet and its call context.
 
-OBIETTIVO:
-Identifica se esiste una VULNERABILITÀ DI SICUREZZA reale (es. SQL Injection, Command Injection, Hardcoded Secrets).
+Your Goal: Determine if there is a security vulnerability.
 
-REGOLE:
-1. Se il codice usa variabili in query SQL/System Command senza sanitizzazione, è un rischio ALTO.
-2. Se i "Callers" suggeriscono che la funzione è interna (es. usata solo da test o utils), il rischio è BASSO.
-3. Se i "Callers" suggeriscono che la funzione è esposta (es. API, Views, Controller), il rischio è CRITICO.
-
-CONTESTO CODICE:
+CONTEXT (Code + Callers):
 {context}
 
-DOMANDA SPECIFICA:
-Analizza questo codice cercando potenziali vulnerabilità relative a: {topic}.
+SPECIFIC THREAT TO LOOK FOR:
+{topic}
+
+INSTRUCTIONS:
+1. Look for "Source-to-Sink" patterns: Does user input enter the function and reach a dangerous operation (SQL, os.system, open) without validation?
+2. If the function is just a helper or test, the risk is LOW.
+3. If the code is clearly unsafe (e.g., f-strings in SQL), the risk is HIGH.
 
 OUTPUT FORMAT (Markdown):
-## Vulnerabilità Rilevata: [SI/NO]
-**Tipo:** [es. SQL Injection / Safe]
-**Gravità:** [Alta/Media/Bassa]
-**Analisi:** [Spiegazione tecnica breve del perché è pericoloso o perché è sicuro]
-**File:** [Nome File]
+## Security Alert: [YES/NO]
+**Vulnerability:** [Name of the vulnerability, e.g., SQL Injection]
+**Severity:** [CRITICAL / HIGH / MEDIUM / LOW]
+**Explanation:** [Concise technical explanation of why this is dangerous]
+**File:** [Filename from metadata]
 """
 
 audit_prompt = PromptTemplate(template=security_template, input_variables=["context", "topic"])
@@ -84,7 +79,6 @@ def generate_audit_report():
     
     for topic in RISKY_TOPICS:
         print(f"Scanning: {topic}...")
-        # Nota: assicurati che vector_store sia inizializzato globalmente o passato qui
         try:
             results = vector_store.similarity_search(topic, k=2)
             
@@ -96,8 +90,6 @@ def generate_audit_report():
                     
                     report_content += content + "\n\n---\n\n"
                     
-                    # Logica semplice: se l'LLM scrive "Vulnerabilità Rilevata: SI" o "RISK: HIGH"
-                    # impostiamo il flag a True. (Puoi renderlo più robusto con JSON output)
                     if "Vulnerabilità Rilevata: SI" in content or "Gravità: Alta" in content:
                         vulnerabilities_found = True
         except Exception as e:
